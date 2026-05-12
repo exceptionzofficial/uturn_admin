@@ -8,27 +8,44 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Alert,
-  SafeAreaView,
   StatusBar,
   ScrollView,
   Modal,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Feather';
+import adminApi from '../api/adminApi';
 import apiClient from '../api/apiClient';
 
-const DriverReviewScreen = () => {
+const BASE_URL = 'https://uturn-nl7u.onrender.com';
+
+const DriverReviewScreen = ({ navigation }) => {
   const [drivers, setDrivers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedImage, setSelectedImage] = useState(null);
+  const [editModalVisible, setEditModalVisible] = useState(false);
+  const [editingDriver, setEditingDriver] = useState(null);
+  const [updateLoading, setUpdateLoading] = useState(false);
+
+  const getFullUrl = (path) => {
+    if (!path) return null;
+    if (path.startsWith('http')) return path;
+    return `${BASE_URL}${path.startsWith('/') ? '' : '/'}${path}`;
+  };
 
   const fetchPendingDrivers = async () => {
     setLoading(true);
     try {
-      const response = await apiClient.get('/admin/pending-drivers');
-      setDrivers(response.data);
+      const data = await adminApi.getDrivers();
+      setDrivers(data.filter(d => {
+        const s = d.status?.toUpperCase();
+        return s === 'PENDING_REVIEW' || s === 'PENDING' || !d.status;
+      }));
     } catch (err) {
       console.error(err);
-      Alert.alert('Error', 'Failed to fetch pending applications.');
+      if (err.response?.status !== 401) {
+        Alert.alert('Error', 'Failed to fetch pending applications.');
+      }
     } finally {
       setLoading(false);
     }
@@ -36,12 +53,13 @@ const DriverReviewScreen = () => {
 
   const renderDocThumbnail = (label, url) => {
     if (!url) return null;
+    const fullUrl = getFullUrl(url);
     return (
       <TouchableOpacity 
         style={styles.docThumbnailContainer} 
-        onPress={() => setSelectedImage({ label, url })}
+        onPress={() => setSelectedImage({ label, url: fullUrl })}
       >
-        <Image source={{ uri: url }} style={styles.docThumbnail} />
+        <Image source={{ uri: fullUrl }} style={styles.docThumbnail} />
         <Text style={styles.docLabel}>{label}</Text>
       </TouchableOpacity>
     );
@@ -53,15 +71,59 @@ const DriverReviewScreen = () => {
 
   const handleStatusUpdate = async (driverId, newStatus) => {
     try {
-      const response = await apiClient.post('/admin/update-status', { driverId, status: newStatus });
-      if (response.data.success) {
+      const response = await adminApi.verifyDriver(driverId, newStatus === 'APPROVED', '');
+      if (response.success) {
         Alert.alert('Success', `Driver application ${newStatus.toLowerCase()} successfully.`);
-        setDrivers(prev => prev.filter(d => d.driverId !== driverId));
+        setDrivers(prev => prev.filter(d => d.driverId !== driverId && d.id !== driverId));
       }
     } catch (err) {
       console.error(err);
       Alert.alert('Error', 'Update failed.');
     }
+  };
+
+  const handleEditPress = (driver) => {
+    setEditingDriver({ ...driver });
+    setEditModalVisible(true);
+  };
+
+  const handleUpdate = async () => {
+    if (!editingDriver.name || !editingDriver.phone) {
+      Alert.alert('Validation', 'Name and Phone are required.');
+      return;
+    }
+
+    setUpdateLoading(true);
+    try {
+      const response = await apiClient.post('/admin/update-driver', editingDriver);
+      if (response.data.success) {
+        Alert.alert('Success', 'Driver details updated.');
+        setEditModalVisible(false);
+        fetchPendingDrivers();
+      }
+    } catch (err) {
+      console.error(err);
+      Alert.alert('Error', 'Update failed.');
+    } finally {
+      setUpdateLoading(false);
+    }
+  };
+
+  const [verifiedFields, setVerifiedFields] = useState({});
+
+  const toggleVerified = (driverId, field) => {
+    setVerifiedFields(prev => {
+      const driverFields = prev[driverId] || { rc: false, insurance: false, photo: false };
+      return {
+        ...prev,
+        [driverId]: { ...driverFields, [field]: !driverFields[field] }
+      };
+    });
+  };
+
+  const isFullyVerified = (driverId) => {
+    const fields = verifiedFields[driverId];
+    return fields && fields.rc && fields.insurance && fields.photo;
   };
 
   const renderDriverCard = ({ item }) => (
@@ -78,6 +140,9 @@ const DriverReviewScreen = () => {
             <Text style={styles.statusText}>{item.status}</Text>
           </View>
         </View>
+        <TouchableOpacity style={styles.editBtn} onPress={() => handleEditPress(item)}>
+          <Icon name="edit-2" size={20} color="#1A237E" />
+        </TouchableOpacity>
       </View>
 
       <View style={styles.detailsBox}>
@@ -108,6 +173,33 @@ const DriverReviewScreen = () => {
         </ScrollView>
       </View>
 
+      <View style={styles.verificationChecklist}>
+        <Text style={styles.checklistTitle}>Mandatory Verification</Text>
+        <View style={styles.checklistRow}>
+          <TouchableOpacity 
+            style={[styles.checkItem, verifiedFields[item.driverId]?.rc && styles.checkItemActive]} 
+            onPress={() => toggleVerified(item.driverId, 'rc')}
+          >
+            <Icon name={verifiedFields[item.driverId]?.rc ? "check-square" : "square"} size={18} color={verifiedFields[item.driverId]?.rc ? "#43A047" : "#666"} />
+            <Text style={styles.checkText}>RC Verified</Text>
+          </TouchableOpacity>
+          <TouchableOpacity 
+            style={[styles.checkItem, verifiedFields[item.driverId]?.insurance && styles.checkItemActive]} 
+            onPress={() => toggleVerified(item.driverId, 'insurance')}
+          >
+            <Icon name={verifiedFields[item.driverId]?.insurance ? "check-square" : "square"} size={18} color={verifiedFields[item.driverId]?.insurance ? "#43A047" : "#666"} />
+            <Text style={styles.checkText}>Insurance Valid</Text>
+          </TouchableOpacity>
+          <TouchableOpacity 
+            style={[styles.checkItem, verifiedFields[item.driverId]?.photo && styles.checkItemActive]} 
+            onPress={() => toggleVerified(item.driverId, 'photo')}
+          >
+            <Icon name={verifiedFields[item.driverId]?.photo ? "check-square" : "square"} size={18} color={verifiedFields[item.driverId]?.photo ? "#43A047" : "#666"} />
+            <Text style={styles.checkText}>Photo Verified</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
       <View style={styles.actionRow}>
         <TouchableOpacity 
           style={[styles.btn, styles.rejectBtn]} 
@@ -118,8 +210,9 @@ const DriverReviewScreen = () => {
         </TouchableOpacity>
         
         <TouchableOpacity 
-          style={[styles.btn, styles.approveBtn]} 
+          style={[styles.btn, styles.approveBtn, !isFullyVerified(item.driverId) && styles.btnDisabled]} 
           onPress={() => handleStatusUpdate(item.driverId, 'APPROVED')}
+          disabled={!isFullyVerified(item.driverId)}
         >
           <Icon name="check-circle" size={18} color="#FFF" />
           <Text style={styles.btnText}>Approve</Text>
@@ -382,6 +475,51 @@ const styles = StyleSheet.create({
     flex: 1,
     width: '100%',
     backgroundColor: '#000',
+  },
+  btnDisabled: {
+    backgroundColor: '#CCC',
+    opacity: 0.6,
+  },
+  verificationChecklist: {
+    marginTop: 20,
+    backgroundColor: '#F0F7F0',
+    borderRadius: 12,
+    padding: 15,
+    borderWidth: 1,
+    borderColor: '#E0EBE0',
+  },
+  checklistTitle: {
+    fontSize: 12,
+    fontWeight: '900',
+    color: '#2E7D32',
+    marginBottom: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  checklistRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  checkItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFF',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#DDD',
+  },
+  checkItemActive: {
+    borderColor: '#43A047',
+    backgroundColor: '#F1F8F1',
+  },
+  checkText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#444',
+    marginLeft: 6,
   },
 });
 
